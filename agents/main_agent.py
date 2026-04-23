@@ -190,7 +190,8 @@ Include:
 
 ## 🏁 Goal
 
-Produce a **production-ready, scalable, and optimized RAG system design + implementation** every time."""
+Produce a **production-ready, scalable, and optimized RAG system design + implementation** every time.
+"""
         self._faiss_index = None
         self._faiss_docs: list = []
         self._embedder = None
@@ -198,6 +199,30 @@ Produce a **production-ready, scalable, and optimized RAG system design + implem
     def _get_tools(self):
         from tools.tool_manager import get_tools
         return get_tools()
+
+    def run(self, message: str) -> str:
+        retrieved_chunks = self._retrieve_from_rag(message)
+        context = "\n".join(retrieved_chunks)
+        messages = [
+            SystemMessage(content=self.system_prompt + f"\n\nContext from vector database: {context}"),
+            HumanMessage(content=message),
+        ]
+        # Agentic loop: keep calling LLM until no more tool calls
+        for _ in range(3):  # max iterations to prevent infinite loops
+            try:
+                response = self.llm_with_tools.invoke(messages)
+                messages.append(response)
+                if not response.tool_calls:
+                    break
+                # Execute each tool call and feed results back
+                for tc in response.tool_calls:
+                    fn = self.tools_map.get(tc["name"])
+                    tool_result = fn.invoke(tc["args"]) if fn else f"Unknown tool: {tc['name']}"
+                    messages.append(ToolMessage(content=str(tool_result), tool_call_id=tc["id"]))
+                    self._ingest_to_rag(message, str(tool_result), tc["name"])
+            except Exception as e:
+                return f"Error: Failed to generate response from LLM. {e}"
+        return response.content if hasattr(response, "content") else str(response)
 
     def _ingest_to_rag(self, query: str, mcp_result: str, tool_name: str = 'mcp_tool') -> None:
         """Ingest MCP-fetched data using BGE-M3, FAISS, Qdrant as specified in the system prompt."""
@@ -251,74 +276,49 @@ Produce a **production-ready, scalable, and optimized RAG system design + implem
             import logging; logging.getLogger(__name__).warning(f'RAG ingestion failed: {e}')
 
     def _retrieve_from_rag(self, query: str, top_k: int = 5) -> List[str]:
-        """Retrieve relevant chunks from FAISS and Qdrant."""
+        """
+        Retrieves relevant chunks from the RAG system using FAISS for initial shortlist and Qdrant for confirmation.
+        """
         try:
             import faiss, numpy as np
             from sentence_transformers import SentenceTransformer
             from qdrant_client import QdrantClient
-            from qdrant_client.models import Filter, FieldCondition, Range
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
             import os
 
             # Embed the query using BGE-M3
             if self._embedder is None:
+                from sentence_transformers import SentenceTransformer
                 self._embedder = SentenceTransformer('BAAI/bge-m3')
             query_embedding = self._embedder.encode(query, normalize_embeddings=True)
 
-            # FAISS retrieval (fast shortlist)
-            k_faiss = 2 * top_k  # Retrieve more candidates from FAISS
-            distances, indices = self._faiss_index.search(np.array([query_embedding]).astype("float32"), k_faiss)
-            faiss_candidate_chunks = [self._faiss_docs[i] for i in indices[0]]
+            # FAISS: Get a shortlist of candidates
+            if self._faiss_index is None:
+                return []  # No documents indexed yet
 
-            # Qdrant retrieval (refined search)
+            D, I = self._faiss_index.search(np.array([query_embedding], dtype='float32'), k=2 * top_k)  # Search FAISS
+            candidate_chunks = [self._faiss_docs[i] for i in I[0] if i < len(self._faiss_docs)]
+
+            # Qdrant: Refine search and return top_k results
             qdrant_url = os.environ.get('QDRANT_URL', 'http://localhost:6333')
             qdrant_key = os.environ.get('QDRANT_API_KEY', '')
             qc = QdrantClient(url=qdrant_url, api_key=qdrant_key or None)
             _COL = 'knowledge_base'
 
-            qdrant_results = qc.search(
+            hits = qc.search(
                 collection_name=_COL,
                 query_vector=query_embedding.tolist(),
                 limit=top_k,
-                query_filter=None  # Add filters if needed (e.g., source, date)
+                query_filter=Filter(
+                    must=[FieldCondition(key="text", match=MatchValue(value=chunk)) for chunk in candidate_chunks]
+                )
             )
 
-            # Combine results (e.g., deduplicate, re-rank) - simple deduplication for now
-            qdrant_chunks = [hit.payload['text'] for hit in qdrant_results]
-            combined_chunks = []
-            seen = set()
-            for chunk in faiss_candidate_chunks + qdrant_chunks:
-                if chunk not in seen:
-                    combined_chunks.append(chunk)
-                    seen.add(chunk)
+            # Extract text from Qdrant hits
+            retrieved_chunks = [hit.payload['text'] for hit in hits]
+            return retrieved_chunks
 
-            return combined_chunks[:top_k]  # Return top_k
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(f'RAG retrieval failed: {e}')
             return []
-
-    def run(self, message: str) -> str:
-        # Retrieve context from RAG
-        context = self._retrieve_from_rag(message)
-        context_str = "\n".join(context)
-
-        messages = [
-            SystemMessage(content=self.system_prompt + f"\n\nRelevant Context:\n{context_str}"),
-            HumanMessage(content=message),
-        ]
-        # Agentic loop: keep calling LLM until no more tool calls
-        for _ in range(3):  # max iterations to prevent infinite loops
-            try:
-                response = self.llm_with_tools.invoke(messages)
-                messages.append(response)
-                if not response.tool_calls:
-                    break
-                # Execute each tool call and feed results back
-                for tc in response.tool_calls:
-                    fn = self.tools_map.get(tc["name"])
-                    tool_result = fn.invoke(tc["args"]) if fn else f"Unknown tool: {tc['name']}"
-                    messages.append(ToolMessage(content=str(tool_result), tool_call_id=tc["id"]))
-                    self._ingest_to_rag(message, str(tool_result), tc["name"]) # Ingest after tool call
-            except Exception as e:
-                return f"Error: Failed to generate response from LLM. {e}"
-        return response.content if hasattr(response, "content") else str(response)

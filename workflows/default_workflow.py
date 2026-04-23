@@ -1,6 +1,2 @@
-def run_workflow(message: str) -> str:
-    """
-    Placeholder for a more complex workflow.
-    For now, it simply returns the input message.
-    """
-    return f"Workflow processed: {message}"
+# Placeholder for workflow logic.  In this case, the agent's run() method
+# in agents/main_agent.py defines the entire workflow.

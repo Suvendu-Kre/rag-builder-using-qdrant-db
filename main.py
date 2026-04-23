@@ -1,46 +1,95 @@
-from fastapi import FastAPI, Request, HTTPException
+import time, os, uuid, psutil
+from datetime import datetime
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional, Dict, Any
 from agents.main_agent import Agent
 from observability.monitoring import process_request
 from guardrails.safety import validate_input, validate_output
-from error_handling.handler import retry
-import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+_START_TIME = time.time()
+_REQUEST_COUNT = 0
+_AGENT_NAME = "Agent"  # replace with actual agent name
+_AGENT_VERSION = "1.0.0"
 
-app = FastAPI()
+app = FastAPI(title=_AGENT_NAME)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                   allow_methods=["*"], allow_headers=["*"])
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+agent = Agent()
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: Optional[str] = None
 
-class ChatResponse(BaseModel):
-    response: str
+class RunRequest(BaseModel):
+    input: str
+    context: Optional[Dict[str, Any]] = {}
 
 @app.get("/health")
-async def health_check():
-    return {"status": "ok"}
+def health():
+    return {"status": "ok", "agent": _AGENT_NAME, "version": _AGENT_VERSION,
+            "timestamp": datetime.utcnow().isoformat() + "Z"}
 
-@app.post("/chat", response_model=ChatResponse)
-@process_request()
-async def chat_endpoint(request: ChatRequest):
+@app.post("/chat")
+@process_request
+async def chat(req: ChatRequest):
+    global _REQUEST_COUNT
+    _REQUEST_COUNT += 1
+    session_id = req.session_id or str(uuid.uuid4())
+    validated_message = validate_input(req.message)
+    response = agent.run(validated_message)
+    validated_response = validate_output(response)
+    return {"response": validated_response, "session_id": session_id}
+
+@app.post("/run")
+@process_request
+async def run(req: RunRequest):
+    global _REQUEST_COUNT
+    _REQUEST_COUNT += 1
+    task_id = str(uuid.uuid4())
+    validated_input = validate_input(req.input)
+    result = agent.run(validated_input)
+    validated_result = validate_output(result)
+    return {"ok": True, "task_id": task_id, "result": validated_result,
+            "input": req.input, "completed_at": datetime.utcnow().isoformat() + "Z"}
+
+@app.get("/info")
+def info():
+    return {
+        "name": _AGENT_NAME,
+        "version": _AGENT_VERSION,
+        "description": "AI agent powered by the KRE platform",
+        "capabilities": ["chat", "task_execution", "rag", "tool_use"],
+        "tools": ["calculate"],   # populate with real tool names from tool_manager
+        "endpoints": [
+            {"method": "GET",  "path": "/health", "description": "Liveness check"},
+            {"method": "POST", "path": "/chat",   "description": "Chat with the agent"},
+            {"method": "POST", "path": "/run",    "description": "Run an agent task"},
+            {"method": "GET",  "path": "/info",   "description": "Agent metadata"},
+            {"method": "GET",  "path": "/status", "description": "Runtime status"},
+        ],
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+@app.get("/status")
+def status():
+    uptime = time.time() - _START_TIME
     try:
-        user_message = validate_input(request.message)
-        agent = Agent()
-        agent_response = retry(agent.run)(user_message)
-        validated_response = validate_output(agent_response)
-        return ChatResponse(response=validated_response)
-    except Exception as e:
-        logging.exception("Error processing chat request")
-        raise HTTPException(status_code=500, detail=str(e))
+        proc = psutil.Process(os.getpid())
+        mem_mb = proc.memory_info().rss / 1_048_576
+    except Exception:
+        mem_mb = 0.0
+    return {
+        "status": "running",
+        "agent": _AGENT_NAME,
+        "version": _AGENT_VERSION,
+        "uptime_seconds": round(uptime, 2),
+        "memory_mb": round(mem_mb, 2),
+        "requests_total": _REQUEST_COUNT,
+        "started_at": datetime.utcfromtimestamp(_START_TIME).isoformat() + "Z",
+    }
 
 if __name__ == "__main__":
     import uvicorn, os, socket

@@ -1,13 +1,12 @@
-def validate_input(input_text: str) -> str:
+def validate_input(input: str) -> str:
     """
-    Validates the input to ensure it is safe and appropriate.
+    Validates the input to ensure it is not malicious or harmful.
     """
-    # Basic profanity check (replace with a more sophisticated solution)
-    profane_words = ["badword1", "badword2"]
-    for word in profane_words:
-        if word in input_text.lower():
-            return "Error: Input contains inappropriate language."
-    return input_text
+    # Basic input sanitization (can be expanded)
+    input = input.strip()
+    if not input:
+        return "Error: Input cannot be empty."
+    return input
 
 def validate_output(output: str) -> str:
     """

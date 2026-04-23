@@ -59,9 +59,12 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 python main.py
 ```
 
-The server starts on **http://localhost:8081** with two endpoints:
-- `GET  /health` — liveness check
-- `POST /chat`   — send `{"message": "your question"}`, get `{"response": "..."}`
+The server starts on **http://localhost:8081** with five standard endpoints:
+- `GET  /health` — liveness check → `{"status":"ok","agent":"<name>"}`
+- `POST /chat`   — chat with the agent → `{"response":"...","session_id":"..."}`
+- `POST /run`    — execute a task → `{"ok":true,"result":"...","task_id":"..."}`
+- `GET  /info`   — agent metadata, capabilities, tool list
+- `GET  /status` — runtime status: uptime, memory, request count
 
 ---
 
@@ -109,7 +112,7 @@ AI Agent/
 ├── setup.bat                  # Windows setup script
 ├── setup.sh                   # Linux/macOS setup script
 ├── .gitignore
-└── main.py                    # FastAPI entry point (GET /health, POST /chat)
+└── main.py                    # FastAPI entry point (GET /health, POST /chat, POST /run, GET /info, GET /status)
 ```
 
 ---
@@ -278,8 +281,11 @@ Every message sent to `POST /chat` goes through this pipeline:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Health check — returns `{"status": "ok"}` |
-| `POST` | `/chat` | Chat with the agent. Body: `{"message": "..."}` |
+| `GET`  | `/health` | Health check — returns `{"status":"ok","agent":"<name>"}` |
+| `POST` | `/chat`   | Chat with the agent. Body: `{"message":"..."}`. Returns `{"response":"...","session_id":"..."}` |
+| `POST` | `/run`    | Execute a task. Body: `{"input":"...","context":{}}`. Returns `{"ok":true,"result":"...","task_id":"..."}` |
+| `GET`  | `/info`   | Agent metadata, description, capabilities, tool list |
+| `GET`  | `/status` | Runtime: uptime, memory_mb, requests_total |
 
 ### Chat Example
 

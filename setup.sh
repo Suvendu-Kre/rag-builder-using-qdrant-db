@@ -7,6 +7,6 @@ echo "Installing dependencies..."
 pip install -r requirements.txt
 echo ""
 echo "Setup complete! Next steps:"
-echo "  1. Copy .env.example to .env to .env and fill in your credentials"
+echo "  1. Copy .env.example to .env and fill in your credentials"
 echo "  2. Run: source venv/bin/activate"
 echo "  3. Run: python main.py"

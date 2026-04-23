@@ -1,24 +1,23 @@
 import time
 import random
 
-def retry(func, attempts=3, delay=1, exponential_backoff=True):
+def retry(func, attempts=3, delay=1, backoff=2):
     """Retry a function with exponential backoff."""
-    def wrapper(*args, **kwargs):
-        attempt = 0
-        while attempt < attempts:
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                attempt += 1
-                if attempt == attempts:
-                    raise
-                sleep_time = delay * (2 ** (attempt - 1) if exponential_backoff else 1) + random.random()
-                print(f"Attempt {attempt} failed. Retrying in {sleep_time:.2f} seconds...")
-                time.sleep(sleep_time)
-    return wrapper
+    for i in range(attempts):
+        try:
+            return func()
+        except Exception as e:
+            print(f"Attempt {i+1} failed: {e}")
+            if i == attempts - 1:
+                raise  # Re-raise the exception after the last attempt
+            sleep_time = delay * (backoff ** i) + random.uniform(0, 1)
+            time.sleep(sleep_time)
 
-# Placeholder for circuit breaker implementation
-def circuit_breaker(func, failure_threshold=5, recovery_timeout=30):
-    """A simple circuit breaker."""
-    # In a real implementation, you'd track failures and open/close the circuit
-    return func
+# Placeholder for circuit breaker implementation.  In a real system,
+# this would track failure rates and prevent calls to failing services.
+def circuit_breaker(func):
+    """A simple circuit breaker (not fully implemented)."""
+    def wrapper(*args, **kwargs):
+        # In a real implementation, check circuit state here
+        return func(*args, **kwargs)
+    return wrapper
