@@ -1,2 +1,6 @@
-# Placeholder for workflow logic.  In this case, the agent's run() method
-# in agents/main_agent.py defines the entire workflow.
+def run_workflow(input: str, context: dict) -> str:
+    """
+    Executes the default agent workflow.
+    """
+    # Placeholder implementation
+    return f"Workflow executed with input: {input} and context: {context}"

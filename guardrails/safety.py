@@ -1,15 +1,13 @@
 def validate_input(input: str) -> str:
     """
-    Validates the input to ensure it is not malicious or harmful.
+    Validates the input to ensure it meets certain criteria.
     """
-    # Basic input sanitization (can be expanded)
-    input = input.strip()
-    if not input:
+    if not input or not input.strip():
         return "Error: Input cannot be empty."
-    return input
+    return input.strip()
 
 def validate_output(output: str) -> str:
     """
-    Validates the output to ensure it is safe and appropriate.
+    Validates the output to ensure it meets certain criteria.
     """
     return output.strip() if output and output.strip() else "Error: Empty response."

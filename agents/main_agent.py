@@ -31,6 +31,7 @@ When given any input (documents, URLs, raw text, or use-case description), you M
 * Identify domain (e.g., legal, chatbot, docs QA, support bot)
 * Determine scale (small / medium / large dataset)
 * Identify latency vs accuracy tradeoffs
+* **Consider data characteristics:** (e.g., presence of code snippets, tables, lists) - *This helps tailor chunking and preprocessing.*
 
 ---
 
@@ -64,8 +65,9 @@ You MUST always structure the pipeline as:
 
   * Chunk size: 200–500 tokens
   * Overlap: 20–50 tokens
-
-Explain WHY you chose these values.
+* **Consider using a sliding window approach for overlap.**
+* Explain WHY you chose these values.
+* **Specifically, how does the chosen chunk size relate to the typical length of answers expected from the LLM?**
 
 ---
 
@@ -78,6 +80,8 @@ Explain WHY you chose these values.
   * sparse vectors (if hybrid search used)
 * Normalize embeddings if needed
 * Explain embedding dimensionality and impact
+* **Specify which BGE-M3 model variant is recommended (e.g., base, large) and why.**
+* **Discuss the impact of normalization on search performance.**
 
 ---
 
@@ -89,13 +93,15 @@ You MUST explain:
 
 * Type (Flat, IVF, HNSW)
 * Why chosen (speed vs accuracy)
+* **Mention considerations for FAISS index size and memory usage.**
 
 #### Qdrant:
 
 * Collection schema
 * Vector config
-* Payload structure
+* Payload structure (include source document metadata for traceability)
 * Filtering capability
+* **Discuss Qdrant's scoring functions and how they can be tuned for relevance.**
 
 Explain how FAISS and Qdrant complement each other.
 
@@ -112,6 +118,8 @@ You MUST include one of:
   * Qdrant (refined search)
 
 Explain trade-offs clearly.
+* **Provide concrete examples of when each retrieval strategy is most appropriate.**
+* **Discuss the weighting strategy for hybrid retrieval (if applicable).**
 
 ---
 
@@ -121,7 +129,7 @@ Always generate:
 
 * Python code using:
 
-  * sentence-transformers or HuggingFace (for BGE-M3)
+  * sentence-transformers or HuggingFace Transformers (for BGE-M3)
   * faiss
   * qdrant-client
 * Modular structure:
@@ -130,6 +138,8 @@ Always generate:
   * embedding.py
   * index.py
   * query.py
+* **Include error handling and logging in the code snippets.**
+* **Use type hints for better code readability and maintainability.**
 
 ---
 
@@ -204,24 +214,21 @@ Produce a **production-ready, scalable, and optimized RAG system design + implem
         retrieved_chunks = self._retrieve_from_rag(message)
         context = "\n".join(retrieved_chunks)
         messages = [
-            SystemMessage(content=self.system_prompt + f"\n\nContext from vector database: {context}"),
+            SystemMessage(content=self.system_prompt + f"\n\nContext from RAG:\n{context}"),
             HumanMessage(content=message),
         ]
         # Agentic loop: keep calling LLM until no more tool calls
         for _ in range(3):  # max iterations to prevent infinite loops
-            try:
-                response = self.llm_with_tools.invoke(messages)
-                messages.append(response)
-                if not response.tool_calls:
-                    break
-                # Execute each tool call and feed results back
-                for tc in response.tool_calls:
-                    fn = self.tools_map.get(tc["name"])
-                    tool_result = fn.invoke(tc["args"]) if fn else f"Unknown tool: {tc['name']}"
-                    messages.append(ToolMessage(content=str(tool_result), tool_call_id=tc["id"]))
-                    self._ingest_to_rag(message, str(tool_result), tc["name"])
-            except Exception as e:
-                return f"Error: Failed to generate response from LLM. {e}"
+            response = self.llm_with_tools.invoke(messages)
+            messages.append(response)
+            if not response.tool_calls:
+                break
+            # Execute each tool call and feed results back
+            for tc in response.tool_calls:
+                fn = self.tools_map.get(tc["name"])
+                result = fn.invoke(tc["args"]) if fn else f"Unknown tool: {tc['name']}"
+                messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+                self._ingest_to_rag(message, str(result), tc["name"]) # Ingest after tool call
         return response.content if hasattr(response, "content") else str(response)
 
     def _ingest_to_rag(self, query: str, mcp_result: str, tool_name: str = 'mcp_tool') -> None:
@@ -277,48 +284,53 @@ Produce a **production-ready, scalable, and optimized RAG system design + implem
 
     def _retrieve_from_rag(self, query: str, top_k: int = 5) -> List[str]:
         """
-        Retrieves relevant chunks from the RAG system using FAISS for initial shortlist and Qdrant for confirmation.
+        Retrieves relevant chunks from the RAG system using FAISS for initial shortlist and Qdrant for refined search.
         """
         try:
             import faiss, numpy as np
             from sentence_transformers import SentenceTransformer
             from qdrant_client import QdrantClient
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            from qdrant_client.models import PointStruct, Filter, FieldCondition, Range
             import os
 
-            # Embed the query using BGE-M3
             if self._embedder is None:
-                from sentence_transformers import SentenceTransformer
                 self._embedder = SentenceTransformer('BAAI/bge-m3')
+
             query_embedding = self._embedder.encode(query, normalize_embeddings=True)
+            query_embedding_np = np.array([query_embedding]).astype('float32')
 
-            # FAISS: Get a shortlist of candidates
+            # FAISS: Fast shortlist retrieval
             if self._faiss_index is None:
-                return []  # No documents indexed yet
+                return []
 
-            D, I = self._faiss_index.search(np.array([query_embedding], dtype='float32'), k=2 * top_k)  # Search FAISS
-            candidate_chunks = [self._faiss_docs[i] for i in I[0] if i < len(self._faiss_docs)]
+            D, I = self._faiss_index.search(query_embedding_np, 2 * top_k)  # Retrieve 2*top_k for shortlist
+            candidate_chunks = [self._faiss_docs[i] for i in I[0]]
 
-            # Qdrant: Refine search and return top_k results
+            # Qdrant: Refine search and filter (if needed)
             qdrant_url = os.environ.get('QDRANT_URL', 'http://localhost:6333')
             qdrant_key = os.environ.get('QDRANT_API_KEY', '')
             qc = QdrantClient(url=qdrant_url, api_key=qdrant_key or None)
             _COL = 'knowledge_base'
 
-            hits = qc.search(
+            search_result = qc.search(
                 collection_name=_COL,
                 query_vector=query_embedding.tolist(),
                 limit=top_k,
-                query_filter=Filter(
-                    must=[FieldCondition(key="text", match=MatchValue(value=chunk)) for chunk in candidate_chunks]
-                )
+                # Add filters here if needed, e.g., to filter by tool name:
+                # filters=[Filter(must=[FieldCondition(key="tool", match=MatchValue(value="my_tool"))])]
             )
 
-            # Extract text from Qdrant hits
-            retrieved_chunks = [hit.payload['text'] for hit in hits]
-            return retrieved_chunks
+            # Combine results from FAISS and Qdrant (e.g., by re-ranking Qdrant results based on FAISS distance)
+            # For simplicity, we'll just return the top_k Qdrant results here.
+            final_chunks = [hit.payload['text'] for hit in search_result]
+
+            return final_chunks
 
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(f'RAG retrieval failed: {e}')
             return []
+
+
+    async def chat(self, message: str) -> str:
+        return self.run(message)
